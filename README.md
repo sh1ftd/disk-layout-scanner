@@ -13,31 +13,55 @@ Command-line program that enumerates **physical** disks and prints a report to t
 
 ---
 
-## What gets reported
+## Extraction inventory
 
-Empty sections are omitted when there is nothing to show.
+Output hides a block when that probe failed or stayed empty. This section lists what **queries try to fill** (`queries_win.c`, `queries_linux.c`).
 
-| Area | Fields |
-|------|--------|
-| Index | drive # |
-| Storage | vendor, product, revision, serial, bus type/name, removable **(Win)** |
-| ATA IDENTIFY | model/serial/fw, ATA version, LBA28/48 + GB, WWN/NAA/OUI, SSD/RPM, form factor, cache KB, logical sector + phys ratio, SATA gen, queue depth, NCQ/TRIM/LBA48/write cache/SMART flags, UDMA **(JSON)** |
-| Geometry | total bytes, B/s, CHS **(Win; CHS 0 on Linux)** |
-| SMART | pass/fail, temp/POH/cycles/realloc when derivable, all attrs id/name/cur/worst/raw |
-| SMART thresholds | id, threshold, exceeded **(Win)** |
-| VPD 0x83 | id entries: type, codeset **(HTML)**, ascii/hex |
-| Layout | MBR/GPT, disk sig or disk GUID, part count; each part: #, offset, len, MBR type or GPT type+name **(Win)** |
-| Raw LBA0 | disk sig, boot 0xAA55, first part type |
-| NVMe health | critical warn, temp (K json / °C text), spare%+thresh **(not thresh in json)**, %used, data read/write, POH, unsafe shutdowns, media errs *(host cmd counts + err-log count read but not printed)* |
-| NVMe Identify | serial/model/fw, VID/SSVID, ctrl id, ver, OUI, NS count, total NVM, MDTS **(Win; HTML drops ctrl id+MDTS)** |
-| NVMe FW slots | active, pending **(text/json)**, rev per slot **(Win)** |
-| Cache IOCTL | read/write cache, write-through, power protect **(Win)** |
-| Extra IOCTL | seek-penalty hint, TRIM, align offset **(Win)** |
-| Perf | rd/wr count + bytes, QD **(Win IOCTL; Linux diskstats)** *(Linux rd/wr time not shown)* |
-| ATA security / power / HPA / DCO | security state, power mode, HPA/DCO sizes+flags **(Win)** |
-| SED/Opal | capable, locked, summary `desc`; JSON also opal v1/v2 + enterprise **(Win)** |
-| SCSI mode pg | wr/rd cache, AWRE/ARRE, retry byte **(Win)** |
-| Dev path | instance, friendly, HW id, location **(Win)** |
-| Volumes | letter+vol serial+FS+label+GUID **(Win)** · Linux: mount+FS in text/html; **JSON omits mount path** |
+### Windows (each `\\.\PhysicalDriveN` that opens)
 
-**Linux today:** sysfs id, `HDIO_GET_IDENTITY`, SMART via SG, size/sector geometry, raw MBR, rotational/discard, diskstats, mounts, NVMe **health log only**—no layout API, VPD, SMART thresh, NVMe identify/fw, cache/extra IOCTLs, ATA sec/power/HPA/DCO/SED/SCSI mode, PnP path, CHS, Windows-style volumes.
+- **Enumerate:** `drive_number`, `dev_path`.
+- **`IOCTL_STORAGE_QUERY_PROPERTY` / `StorageDeviceProperty`:** vendor, product, revision, serial, bus type + name, removable.
+- **`IOCTL_ATA_PASS_THROUGH` / IDENTIFY:** full `AtaIdentifyInfo` (model/serial/fw, LBA28/48, capacity GB, WWN + NAA/OUI/vendor-specific, RPM/SSD, cache KB, queue depth, SATA gen, NCQ/TRIM/LBA48/write cache/SMART flags, logical sector + phys ratio, form factor, ATA major, UDMA, **`transport_major`**).
+- **`IOCTL_STORAGE_QUERY_PROPERTY` / `StorageDeviceIdProperty`:** up to 16 identifiers (type, code set, names, size, hex + ASCII).
+- **`IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`:** total bytes, bytes/sector, **media type**, cylinders, heads, sectors/track.
+- **SMART:** `SMART_SEND_DRIVE_COMMAND` enable + return-status (no stored bits); `SMART_RCV_DRIVE_DATA` READ VALUES → `SmartInfo` (attrs id/**flags**/name/current/worst/raw, derived temp/POH/cycles/realloc, default `health_ok`); separate RCV **0xD1** thresholds → `SmartThreshInfo` (id, threshold, exceeded vs current).
+- **`IOCTL_STORAGE_QUERY_PROPERTY` / NVMe protocol:** health log **0x02** → all `NvmeHealthInfo` scalars; Identify controller → all `NvmeIdentifyInfo` (incl. **`unalloc_cap_bytes`**); firmware-slot log → `NvmeFwSlotInfo`.
+- **`IOCTL_DISK_GET_CACHE_INFORMATION`:** read/write cache, write-through (`CacheInfo`; **`power_protected` is never written** — stays 0).
+- **`IOCTL_STORAGE_QUERY_PROPERTY` IDs 6 / 7 / 8:** alignment, seek-penalty, TRIM.
+- **`IOCTL_DISK_PERFORMANCE`:** bytes read/write, I/O counts, read/write/**idle** times, queue depth.
+- **`IOCTL_DISK_GET_DRIVE_LAYOUT_EX`:** style MBR/GPT/other, MBR signature or disk GPT GUID, partition count; each nonempty partition → offset, length, number, MBR type **or** GPT type GUID + name.
+- **Read 512 @ LBA0:** `RawMbrInfo` (disk sig, boot sig, first MBR part type).
+- **IDENTIFY word 128:** `AtaSecurityInfo` (supported/enabled/locked/frozen/**count_expired**/enhanced erase/master pwd cap).
+- **CHECK POWER MODE:** `PowerModeInfo`.
+- **READ NATIVE MAX (EXT):** `HpaInfo` vs IDENTIFY max LBA.
+- **DCO IDENTIFY:** `DcoInfo`.
+- **Security protocol IN (Opal-style):** `SedOpalInfo` (SED capable, Opal v1/v2, Enterprise, Ruby, Pyrite v1/v2, locked, `desc`).
+- **SCSI MODE SENSE (0x1A / 0x01):** `ScsiModePagesInfo`.
+- **SetupAPI:** `DevPathInfo` (instance path, friendly name, hardware ID, location, **driver**).
+- **Volumes A–Z (extents on this disk):** letter, volume serial, label, FS name, `\\?\Volume{…}` path.
+
+### Linux (`/sys/block` → `sd*` / `vd*` / `xvd*` / `hd*` / `nvme*n*`)
+
+Linux uses two code paths (`scan_sata_disk` vs `scan_nvme_disk`). Same binary; fewer probes than Windows.
+
+| Source | SATA-style disks (`sd*`, `vd*`, …) | NVMe (`nvme*n`) |
+|--------|--------------------------------------|-----------------|
+| **sysfs** | `vendor`, `model`, `rev`, `transport`→bus guess, `size`, `queue/hw_sector_size`, `queue/rotational`, `queue/discard_max_bytes`, `device/driver`→module name | `device/model`, `serial`, `firmware_rev`, `size`, `discard_max_bytes` |
+| **ioctl** | `HDIO_GET_IDENTITY` → full `AtaIdentifyInfo`; SG **ATA pass-through** → SMART READ VALUES → `SmartInfo`; `pread` sector 0 → `RawMbrInfo` | `NVME_IOCTL_ADMIN_CMD` → health log **0x02** → `NvmeHealthInfo` |
+| **proc** | `/proc/diskstats` → `PerfInfo`; `/proc/mounts` → `fs_name` + `mount_point` | same `diskstats` + `mounts` |
+
+Both paths set `drive_number`, `dev_path`, and mark `extra` (TRIM from discard sysfs; NVMe forces “no seek penalty”). Storage **`removable`** is not read on Linux.
+
+**Not implemented on Linux** (no code path; Windows has these):
+
+| Area |
+|------|
+| OS partition layout (`IOCTL_DISK_GET_DRIVE_LAYOUT_EX` equivalent) |
+| Storage device ID descriptor (`StorageDeviceIdProperty`) |
+| SMART threshold page **0xD1** |
+| NVMe Identify controller + firmware-slot log |
+| Disk cache IOCTL + storage property IDs **6 / 7 / 8** (align, seek penalty, TRIM at that layer) |
+| ATA security / power mode / HPA / DCO / SED scan / SCSI mode sense |
+| SetupAPI-style PnP strings (friendly name, HW ID, location) beyond `dev_path` + driver (SATA only) |
+| Geometry **media type** and **CHS** from kernel |
+| Windows-style volumes (drive letter, volume GUID path, volume serial from `GetVolumeInformation`) |
