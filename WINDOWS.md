@@ -1,6 +1,10 @@
 # Windows — `DiskInfo` extraction reference
 
-<p align="center"><a href="README.md"><b>↑ Back to README</b></a></p>
+<p align="center">
+<a href="README.md"><b>↑ Back to README</b></a>
+&nbsp;·&nbsp;
+<a href="LINUX.md"><b>Linux reference →</b></a>
+</p>
 
 Per-disk handle: `\\.\PhysicalDriveN` for `N` in `0 .. MAX_DRIVES-1`. Implementation: `queries_win.c` → `scan_disks`, `disk_info.h`.
 
@@ -358,4 +362,8 @@ Trusted receive buffer (`0x5C` ATA passthrough), feature list walk.
 
 ---
 
-<p align="center"><a href="README.md"><b>↑ Back to README</b></a></p>
+<p align="center">
+<a href="README.md"><b>↑ Back to README</b></a>
+&nbsp;·&nbsp;
+<a href="LINUX.md"><b>Linux reference →</b></a>
+</p>

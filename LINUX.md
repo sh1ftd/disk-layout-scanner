@@ -1,6 +1,10 @@
 # Linux — `DiskInfo` extraction reference
 
-<p align="center"><a href="README.md"><b>↑ Back to README</b></a></p>
+<p align="center">
+<a href="README.md"><b>↑ Back to README</b></a>
+&nbsp;·&nbsp;
+<a href="WINDOWS.md"><b>Windows reference →</b></a>
+</p>
 
 Enumeration: `/sys/block` (`sd*`, `vd*`, `xvd*`, `hd*`, `nvme*n*`). SATA-style vs NVMe: `scan_sata_disk` vs `scan_nvme_disk` in `queries_linux.c`. Structs: `disk_info.h`.
 
@@ -168,4 +172,8 @@ Enumeration: `/sys/block` (`sd*`, `vd*`, `xvd*`, `hd*`, `nvme*n*`). SATA-style v
 
 ---
 
-<p align="center"><a href="README.md"><b>↑ Back to README</b></a></p>
+<p align="center">
+<a href="README.md"><b>↑ Back to README</b></a>
+&nbsp;·&nbsp;
+<a href="WINDOWS.md"><b>Windows reference →</b></a>
+</p>

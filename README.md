@@ -19,6 +19,9 @@ C17 CLI: enumerates **physical** block devices, fills `DiskInfo` (`src/core/disk
 
 ### Windows (`\\.\PhysicalDriveN`)
 
+**→** [Field-level reference (Windows)](WINDOWS.md)
+
+
 | Probe / API surface | Populated fields (high level) |
 |---------------------|------------------------------|
 | `IOCTL_STORAGE_QUERY_PROPERTY` → `StorageDeviceProperty` | Vendor, product, revision, serial, `STORAGE_BUS_TYPE`, removable |
@@ -39,6 +42,8 @@ C17 CLI: enumerates **physical** block devices, fills `DiskInfo` (`src/core/disk
 **→** [Field-level reference (Windows)](WINDOWS.md)
 
 ### Linux (`/sys/block` → `sd*` / `vd*` / `xvd*` / `hd*` / `nvme*n*`)
+
+**→** [Field-level reference (Linux)](LINUX.md)
 
 | Data class | SATA-style (`sd*`, `vd*`, …) | NVMe (`nvme*n`) |
 |------------|------------------------------|-----------------|
