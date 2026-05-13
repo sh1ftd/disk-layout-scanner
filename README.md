@@ -1,41 +1,43 @@
 # disk-layout-scanner
 
-Walks **physical** drives (up to **64** per run) and dumps identity, health, partitioning, and OS-visible volume hooks into one report. Not a benchmarker and not forensic-grade—values come from firmware, drivers, and OS APIs.
+## What it is
 
-**Typical use (Windows):** run the `.exe` **as Administrator** (double-click or otherwise). It writes **HTML** beside the binary and opens it in your default browser—no flags required. **JSON** and plain **text** modes exist for scripting and piping.
+Command-line program that enumerates **physical** disks and prints a report to the terminal (text or JSON) or to an HTML file—drive identity, partitions, SMART, NVMe health, and related fields the OS can expose.
 
-**Linux:** run the binary with the privileges your block devices need; default is still HTML to a file in the working directory (browser open where `xdg-open` / similar exists).
+---
 
-| | Windows | Linux |
-|--|---------|-------|
-| Access | Admin, `\\.\PhysicalDrive0`… | root where raw `ioctl` / device nodes are required |
-| Scope | Full probe set below | Subset; missing probes leave sections empty |
+## Requirements
 
-### Windows (full)
+- **Windows:** Administrator (SMART / pass-through / `\\.\PhysicalDrive*`).
+- **Linux:** root (block dev ioctls); kernel-dependent.
 
-- **Storage descriptor** — vendor / product / firmware / serial, bus type, removable flag  
-- **ATA IDENTIFY** — model, serial, capacity, WWN/NAA/OUI, media hints, SATA link, NCQ/TRIM, SMART flags  
-- **SMART** — health summary, attributes, thresholds  
-- **NVMe** — health log, Identify Controller, firmware slots  
-- **SCSI** — VPD page 83 IDs, mode pages (cache, realloc, error recovery)  
-- **Layout** — MBR or GPT, partition table with offsets/sizes/types (GPT names)  
-- **Raw MBR** — disk signature, boot signature  
-- **Geometry** — size, bytes/sector, CHS-style fields  
-- **Security / power / clipping** — ATA security state, power mode, HPA, DCO, SED hints  
-- **Cache & perf** — write/read cache policy, SMART-style perf counters  
-- **PnP path** — instance ID, friendly name, hardware ID, location  
-- **Volumes** — drive letters, volume serial, FS, label, mount paths  
+---
 
-### Linux (current)
+## What gets reported
 
-- Block device identity via **sysfs** (model, serial, WWN where exposed)  
-- **ATA IDENTIFY** when the path exposes it  
-- **SMART** via SAT passthrough where supported  
-- **NVMe** health log  
-- **MBR** first-sector fields, **geometry** from sysfs  
-- **`/proc/diskstats`** counters, **`/proc/mounts`** hooks for mounted paths  
-- Basic **device path** string where available  
+Empty sections are omitted when there is nothing to show.
 
-Prebuilt **Windows** + static **Linux (musl)** binaries: [Releases](https://github.com/sh1ftd/disk-layout-scanner/releases).
+| Area | Fields |
+|------|--------|
+| Index | drive # |
+| Storage | vendor, product, revision, serial, bus type/name, removable **(Win)** |
+| ATA IDENTIFY | model/serial/fw, ATA version, LBA28/48 + GB, WWN/NAA/OUI, SSD/RPM, form factor, cache KB, logical sector + phys ratio, SATA gen, queue depth, NCQ/TRIM/LBA48/write cache/SMART flags, UDMA **(JSON)** |
+| Geometry | total bytes, B/s, CHS **(Win; CHS 0 on Linux)** |
+| SMART | pass/fail, temp/POH/cycles/realloc when derivable, all attrs id/name/cur/worst/raw |
+| SMART thresholds | id, threshold, exceeded **(Win)** |
+| VPD 0x83 | id entries: type, codeset **(HTML)**, ascii/hex |
+| Layout | MBR/GPT, disk sig or disk GUID, part count; each part: #, offset, len, MBR type or GPT type+name **(Win)** |
+| Raw LBA0 | disk sig, boot 0xAA55, first part type |
+| NVMe health | critical warn, temp (K json / °C text), spare%+thresh **(not thresh in json)**, %used, data read/write, POH, unsafe shutdowns, media errs *(host cmd counts + err-log count read but not printed)* |
+| NVMe Identify | serial/model/fw, VID/SSVID, ctrl id, ver, OUI, NS count, total NVM, MDTS **(Win; HTML drops ctrl id+MDTS)** |
+| NVMe FW slots | active, pending **(text/json)**, rev per slot **(Win)** |
+| Cache IOCTL | read/write cache, write-through, power protect **(Win)** |
+| Extra IOCTL | seek-penalty hint, TRIM, align offset **(Win)** |
+| Perf | rd/wr count + bytes, QD **(Win IOCTL; Linux diskstats)** *(Linux rd/wr time not shown)* |
+| ATA security / power / HPA / DCO | security state, power mode, HPA/DCO sizes+flags **(Win)** |
+| SED/Opal | capable, locked, summary `desc`; JSON also opal v1/v2 + enterprise **(Win)** |
+| SCSI mode pg | wr/rd cache, AWRE/ARRE, retry byte **(Win)** |
+| Dev path | instance, friendly, HW id, location **(Win)** |
+| Volumes | letter+vol serial+FS+label+GUID **(Win)** · Linux: mount+FS in text/html; **JSON omits mount path** |
 
-MIT License.
+**Linux today:** sysfs id, `HDIO_GET_IDENTITY`, SMART via SG, size/sector geometry, raw MBR, rotational/discard, diskstats, mounts, NVMe **health log only**—no layout API, VPD, SMART thresh, NVMe identify/fw, cache/extra IOCTLs, ATA sec/power/HPA/DCO/SED/SCSI mode, PnP path, CHS, Windows-style volumes.
