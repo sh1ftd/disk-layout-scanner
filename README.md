@@ -2,7 +2,7 @@
 
 ## What it is
 
-C17 CLI: enumerates **physical** block devices, fills `DiskInfo` (`src/core/disk_info.h`), writes **text**, **JSON**, or **HTML** (`--text` / `--json` / `--html`; default `report.html` beside the binary).
+Command-line program that enumerates **physical** disks and prints a report to the terminal (text or JSON) or to an HTML file—drive identity, partitions, SMART, NVMe health, and related fields the OS can expose.
 
 ---
 
