@@ -1,0 +1,9 @@
+.git/
+.github/
+
+build/
+BINARIES/
+
+.gitignore
+README.md
+LICENSE

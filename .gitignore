@@ -1,0 +1,9 @@
+build/
+build-ci/
+BINARIES/
+
+report.html
+
+.venv/
+venv/
+

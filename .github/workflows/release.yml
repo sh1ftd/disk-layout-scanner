@@ -1,0 +1,107 @@
+# Builds artifacts and publishes a GitHub Release for v<VERSION>.
+#
+# Tag creation from Actions is often blocked by repository rulesets ("Cannot create ref
+# due to creations being restricted"). If that happens, either allow the workflow
+# actor to create tags in Rules → Rulesets, use a PAT with bypass in a secret, or
+# publish by pushing an existing tag (see `push.tags` below) so the workflow never
+# needs to create the ref.
+#
+# "tag_name was used by an immutable release": GitHub will not reuse a tag tied to
+# an immutable release. Bump VERSION (and push a new tag) for the next release.
+name: Release
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - VERSION
+      - .github/workflows/**
+      - src/**
+      - CMakeLists.txt
+      - Dockerfile
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - run: cmake --build build --config Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/Release/disk-layout-scanner.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -eux
+          export DEBIAN_FRONTEND=noninteractive
+          V=$(tr -d '[:space:]' < VERSION)
+          sudo apt-get update
+          # linux-libc-dev: UAPI headers (linux/*.h) under /usr/include — musl-gcc does not search there by default.
+          sudo apt-get install -y --no-install-recommends musl-tools linux-libc-dev
+          INC_ARCH="/usr/include/$(cc -dumpmachine)"
+          musl-gcc -std=c17 -O2 -Wall -Wextra -Wno-unused-parameter \
+            -Isrc/core -static \
+            -idirafter "${INC_ARCH}" -idirafter /usr/include \
+            -flto -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+            -Wformat -Wformat-security \
+            -Wl,-z,relro,-z,now -Wl,-z,noexecstack \
+            -DDISK_LAYOUT_SCANNER_VERSION="\"$V\"" \
+            -s \
+            src/main.c src/core/common.c src/queries/queries_linux.c \
+            src/output/text_output.c src/output/json_output.c src/output/html_output.c \
+            -o disk-layout-scanner
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: disk-layout-scanner
+
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: echo "value=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows
+          path: artifacts/
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: artifacts/
+      - run: |
+          mv artifacts/disk-layout-scanner.exe artifacts/disk-layout-scanner_windows.exe
+          mv artifacts/disk-layout-scanner artifacts/disk-layout-scanner_linux
+      - uses: softprops/action-gh-release@v2
+        with:
+          # Tag-triggered runs: ref already exists (e.g. you ran `git tag v1.0.1 && git push origin v1.0.1`).
+          # Branch/dispatch runs: action creates the tag at target_commitish (needs ruleset permission).
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.ver.outputs.value) }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            artifacts/disk-layout-scanner_windows.exe
+            artifacts/disk-layout-scanner_linux
