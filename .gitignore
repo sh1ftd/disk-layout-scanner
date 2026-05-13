@@ -1,9 +1,9 @@
 build/
 build-ci/
 BINARIES/
-
-report.html
+build_dbg/
 
 .venv/
 venv/
 
+report.html

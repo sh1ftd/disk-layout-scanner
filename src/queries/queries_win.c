@@ -902,9 +902,6 @@ static void query_sed_opal(HANDLE hDisk, SedOpalInfo* out) {
         return;
     }
 
-    out->valid = 1;
-    out->sed_capable = 1;
-
     UINT32 total_len = 0;
     if (ret >= 4) {
         total_len = *(UINT32*)trusted_buf;
@@ -912,13 +909,26 @@ static void query_sed_opal(HANDLE hDisk, SedOpalInfo* out) {
                   | ((total_len << 8) & 0xFF0000) | ((total_len << 24) & 0xFF000000);
     }
 
+    /* Cap to bytes actually returned; never let end fall before ptr (that wraps size_t and corrupts the loop). */
+    BYTE* buf_end = trusted_buf + (ret < sizeof(trusted_buf) ? ret : sizeof(trusted_buf));
+    BYTE* end = trusted_buf + total_len;
+    if (end > buf_end)
+        end = buf_end;
+
     BYTE* ptr = trusted_buf + 48; /* skip header */
-    BYTE* end = trusted_buf + (total_len < 512 ? total_len : 512);
-    while ((size_t)(end - ptr) >= 4) {
+    if (ptr >= end || total_len < 48)
+        return;
+
+    out->valid = 1;
+    out->sed_capable = 1;
+
+    while (ptr + 4 <= end) {
         UINT16 feat_code = (UINT16)((ptr[0] << 8) | ptr[1]);
         UINT16 feat_len  = (UINT16)((ptr[2] << 8) | ptr[3]);
         size_t rem = (size_t)(end - ptr);
-        if ((size_t)feat_len > rem - 4) break;
+        size_t chunk = 4 + (size_t)feat_len;
+        if (chunk > rem)
+            break;
         switch (feat_code) {
             case 0x0001: /* TPer */ break;
             case 0x0002: /* Locking */
@@ -931,7 +941,7 @@ static void query_sed_opal(HANDLE hDisk, SedOpalInfo* out) {
             case 0x0302: out->pyrite_v1 = 1; break;
             case 0x0303: out->pyrite_v2 = 1; break;
         }
-        ptr += 4 + feat_len;
+        ptr += chunk;
     }
 
     char* p = out->desc;
