@@ -1,5 +1,6 @@
 #ifndef _WIN32
 #include "../core/disk_info.h"
+#include <ctype.h>
 
 #ifndef NVME_LOG_PAGE_HEALTH_INFO
 #define NVME_LOG_PAGE_HEALTH_INFO 0x02
@@ -69,7 +70,9 @@ static void parse_ata_identify(const BYTE* identify, AtaIdentifyInfo* out) {
     out->trim_supported   = (w[169] >> 0) & 1;
 
     if (w[106] & (1 << 14)) {
-        out->phys_log_ratio = 1 << (w[106] & 0x0F);
+        unsigned mult = (unsigned)(w[106] & 0x0Fu);
+        if (mult > 30u) mult = 30u;
+        out->phys_log_ratio = (UINT16)(1u << mult);
         out->log_sector_size = (w[106] & (1 << 12)) ?
             (UINT16)(((UINT32)w[117] | ((UINT32)w[118] << 16)) * 2) : 512;
     } else {
@@ -188,7 +191,6 @@ static void scan_sata_disk(const char* dev_path, const char* name, DiskInfo* d) 
         sprintf(syspath, "/sys/block/%s/queue/hw_sector_size", name);
         long long hw_ss = read_sysfs_ll(syspath);
         if (hw_ss > 0) d->geometry.bytes_per_sector = (UINT32)hw_ss;
-        /* /sys/block/<dev>/size is always in 512-byte sectors, independent of hw_sector_size. */
         d->geometry.total_bytes = (UINT64)sectors * 512;
     }
 
@@ -246,7 +248,6 @@ static void scan_nvme_disk(const char* dev_path, const char* name, DiskInfo* d) 
     if (sectors > 0) {
         d->geometry.valid = 1;
         d->geometry.bytes_per_sector = 512;
-        /* /sys/block/<dev>/size is always in 512-byte sectors, independent of hw_sector_size. */
         d->geometry.total_bytes = (UINT64)sectors * 512;
     }
 
@@ -291,6 +292,31 @@ static void scan_nvme_disk(const char* dev_path, const char* name, DiskInfo* d) 
     close(fd);
 }
 
+static int mount_source_matches_disk(const char* dev, const char* disk_name) {
+    char base[300];
+    snprintf(base, sizeof(base), "/dev/%s", disk_name);
+    size_t bl = strlen(base);
+    if (strcmp(dev, base) == 0) return 1;
+    if (strncmp(dev, base, bl) != 0) return 0;
+    const char* sfx = dev + bl;
+    if (*sfx == '\0') return 0;
+    if (strncmp(disk_name, "nvme", 4) == 0) {
+        if (*sfx != 'p') return 0;
+        sfx++;
+        if (*sfx == '\0' || !isdigit((unsigned char)*sfx)) return 0;
+        while (*sfx) {
+            if (!isdigit((unsigned char)*sfx)) return 0;
+            sfx++;
+        }
+        return 1;
+    }
+    while (*sfx) {
+        if (!isdigit((unsigned char)*sfx)) return 0;
+        sfx++;
+    }
+    return 1;
+}
+
 static void scan_mounts(const char* disk_name, VolumesInfo* vols) {
     memset(vols, 0, sizeof(*vols));
     FILE* f = fopen("/proc/mounts", "r");
@@ -300,7 +326,7 @@ static void scan_mounts(const char* disk_name, VolumesInfo* vols) {
     while (fgets(line, sizeof(line), f) && vols->count < MAX_VOLUMES) {
         char dev[256], mount[256], fs[64];
         if (sscanf(line, "%255s %255s %63s", dev, mount, fs) != 3) continue;
-        if (strstr(dev, disk_name) == NULL) continue;
+        if (!mount_source_matches_disk(dev, disk_name)) continue;
 
         VolumeInfo* v = &vols->vols[vols->count];
         snprintf(v->fs_name, sizeof(v->fs_name), "%s", fs);

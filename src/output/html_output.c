@@ -1,4 +1,46 @@
 #include "../core/disk_info.h"
+#include <string.h>
+
+#define HTML_ESC_BUF 4096
+
+static void html_escape(const char* src, char* dst, size_t dst_sz) {
+    if (!dst || dst_sz == 0) return;
+    if (!src) src = "";
+    size_t w = 0;
+    for (; *src; src++) {
+        unsigned char c = (unsigned char)*src;
+        const char* rep = NULL;
+        char ent[16];
+        if (c < 32u && c != '\t' && c != '\n' && c != '\r') {
+            snprintf(ent, sizeof(ent), "&#x%02X;", c);
+            rep = ent;
+        } else {
+            switch (c) {
+            case '&': rep = "&amp;"; break;
+            case '<': rep = "&lt;"; break;
+            case '>': rep = "&gt;"; break;
+            case '"': rep = "&quot;"; break;
+            case '\'': rep = "&#39;"; break;
+            default:
+                if (w + 1 >= dst_sz) goto done;
+                dst[w++] = (char)c;
+                continue;
+            }
+        }
+        size_t rl = strlen(rep);
+        if (w + rl >= dst_sz) break;
+        memcpy(dst + w, rep, rl);
+        w += rl;
+    }
+done:
+    dst[w] = '\0';
+}
+
+static void row_s(FILE* f, const char* l, const char* cls, const char* val) {
+    char eb[HTML_ESC_BUF];
+    html_escape(val ? val : "", eb, sizeof(eb));
+    fprintf(f, "<div class=\"row\"><span class=\"lbl\">%s</span><span class=\"val %s\">%s</span></div>\n", l, cls, eb);
+}
 
 static void row(FILE* f, const char* l, const char* cls, const char* fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -77,30 +119,33 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
         const char* bc = d->storage.bus_type == 11 ? "b-sata" : d->storage.bus_type == 17 ? "b-nvme" : "b-other";
         const char* prod = d->storage.product[0] ? d->storage.product : "Unknown";
 
+        char eprod[HTML_ESC_BUF], ebus[HTML_ESC_BUF];
+        html_escape(prod, eprod, sizeof(eprod));
+        html_escape(d->storage.bus_name, ebus, sizeof(ebus));
         fprintf(f, "<details class=\"card\" open><summary class=\"card-hdr\"><h2>Drive %d &mdash; %s</h2>"
-                   "<span class=\"badge %s\">%s</span></summary>\n", d->drive_number, prod, bc, d->storage.bus_name);
+                   "<span class=\"badge %s\">%s</span></summary>\n", d->drive_number, eprod, bc, ebus);
 
         if (d->storage.valid) {
             sec_open(f, "Storage Property");
-            if (d->storage.vendor[0]) row(f, "Vendor", "", "%s", d->storage.vendor);
-            row(f, "Product", "", "%s", d->storage.product);
-            if (d->storage.revision[0]) row(f, "Revision", "", "%s", d->storage.revision);
-            if (d->storage.serial[0]) row(f, "Serial", "hl", "%s", d->storage.serial);
+            if (d->storage.vendor[0]) row_s(f, "Vendor", "", d->storage.vendor);
+            row_s(f, "Product", "", d->storage.product);
+            if (d->storage.revision[0]) row_s(f, "Revision", "", d->storage.revision);
+            if (d->storage.serial[0]) row_s(f, "Serial", "hl", d->storage.serial);
             sec_close(f);
         }
 
         if (d->ata.valid) {
             sec_open(f, "ATA Identify Device");
-            row(f, "Model", "", "%s", d->ata.model);
-            row(f, "Serial", "hl", "%s", d->ata.serial);
-            row(f, "Firmware", "", "%s", d->ata.firmware);
-            row(f, "ATA Version", "", "%s", ata_version_name(d->ata.ata_major));
+            row_s(f, "Model", "", d->ata.model);
+            row_s(f, "Serial", "hl", d->ata.serial);
+            row_s(f, "Firmware", "", d->ata.firmware);
+            row_s(f, "ATA Version", "", ata_version_name(d->ata.ata_major));
             row(f, "Capacity", "", "%.1f GB", d->ata.capacity_gb);
             if (d->ata.wwn) {
                 fprintf(f, "<div class=\"row\"><span class=\"lbl\">WWN</span><span class=\"val wwn\">%016llX</span></div>\n", (unsigned long long)d->ata.wwn);
                 fprintf(f, "<div class=\"row\"><span class=\"lbl\">NAA / OUI</span><span class=\"val wwn\">%u / %06X</span></div>\n", d->ata.naa, d->ata.oui);
             }
-            if (d->ata.form_factor) row(f, "Form Factor", "", "%s", form_factor_name(d->ata.form_factor));
+            if (d->ata.form_factor) row_s(f, "Form Factor", "", form_factor_name(d->ata.form_factor));
             fprintf(f, "<div class=\"row\"><span class=\"lbl\">Media</span><span class=\"val\">%s</span></div>\n",
                     d->ata.is_ssd ? "SSD" : (d->ata.rpm ? "HDD" : "Unknown"));
             if (d->ata.rpm) row(f, "RPM", "", "%u", d->ata.rpm);
@@ -142,8 +187,10 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
                 fputs("<span class=\"sh\">ID</span><span class=\"sh\">Name</span><span class=\"sh\">Cur</span><span class=\"sh\">Wst</span><span class=\"sh\">Raw</span>\n", f);
                 for (int j = 0; j < d->smart.attr_count; j++) {
                     SmartAttr* a = &d->smart.attrs[j];
+                    char ename[HTML_ESC_BUF];
+                    html_escape(a->name, ename, sizeof(ename));
                     fprintf(f, "<span>0x%02X</span><span>%s</span><span>%u</span><span>%u</span><span>%llu</span>\n",
-                            a->id, a->name, a->current, a->worst, (unsigned long long)a->raw);
+                            a->id, ename, a->current, a->worst, (unsigned long long)a->raw);
                 }
                 fputs("</div></details>\n", f);
             }
@@ -154,8 +201,12 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
             sec_open(f, "VPD Page 83 Identifiers");
             for (int j = 0; j < d->ids.count; j++) {
                 VpdIdentifier* e = &d->ids.entries[j];
+                char etn[HTML_ESC_BUF], ecs[HTML_ESC_BUF], ed[HTML_ESC_BUF];
+                html_escape(e->type_name, etn, sizeof(etn));
+                html_escape(e->codeset_name, ecs, sizeof(ecs));
+                html_escape(e->is_ascii ? e->data_ascii : e->data_hex, ed, sizeof(ed));
                 fprintf(f, "<div class=\"id-e\"><strong>%s</strong> (%s) &mdash; %s</div>\n",
-                        e->type_name, e->codeset_name, e->is_ascii ? e->data_ascii : e->data_hex);
+                        etn, ecs, ed);
             }
             sec_close(f);
         }
@@ -167,14 +218,20 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
                 fprintf(f, "<div class=\"row\"><span class=\"lbl\">MBR Signature</span><span class=\"val hl\">0x%08lX</span></div>\n", (unsigned long)d->layout.mbr_signature);
             } else if (d->layout.style == 1) {
                 row(f, "Style", "", "GPT");
-                fprintf(f, "<div class=\"row\"><span class=\"lbl\">GPT GUID</span><span class=\"val hl\">%s</span></div>\n", d->layout.gpt_guid);
+                char eg[HTML_ESC_BUF];
+                html_escape(d->layout.gpt_guid, eg, sizeof(eg));
+                fprintf(f, "<div class=\"row\"><span class=\"lbl\">GPT GUID</span><span class=\"val hl\">%s</span></div>\n", eg);
             }
             if (d->layout.detail_count > 0) {
                 fputs("<details style=\"margin-top:4px\"><summary style=\"cursor:pointer;color:#8b949e;font-size:.75rem\">Partitions</summary>\n", f);
                 for (int p = 0; p < d->layout.detail_count; p++) {
                     PartitionInfo* pi = &d->layout.parts[p];
                     fprintf(f, "<div class=\"part-row\">Part %u: %.1f GB", pi->number, (double)pi->length / 1e9);
-                    if (pi->is_gpt && pi->gpt_name[0]) fprintf(f, " &mdash; \"%s\"", pi->gpt_name);
+                    if (pi->is_gpt && pi->gpt_name[0]) {
+                        char en[HTML_ESC_BUF];
+                        html_escape(pi->gpt_name, en, sizeof(en));
+                        fprintf(f, " &mdash; \"%s\"", en);
+                    }
                     fputs("</div>\n", f);
                 }
                 fputs("</details>\n", f);
@@ -251,9 +308,9 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
 
         if (d->nvme_id.valid) {
             sec_open(f, "NVMe Identify Controller");
-            row(f, "Serial", "", "%s", d->nvme_id.serial);
-            row(f, "Model", "", "%s", d->nvme_id.model);
-            row(f, "Firmware", "", "%s", d->nvme_id.firmware);
+            row_s(f, "Serial", "", d->nvme_id.serial);
+            row_s(f, "Model", "", d->nvme_id.model);
+            row_s(f, "Firmware", "", d->nvme_id.firmware);
             row(f, "PCI VID", "", "0x%04X", d->nvme_id.vid);
             row(f, "Subsys VID", "", "0x%04X", d->nvme_id.ssvid);
             row(f, "NVMe Version", "", "%u.%u.%u", (d->nvme_id.ver>>16)&0xFF, (d->nvme_id.ver>>8)&0xFF, d->nvme_id.ver&0xFF);
@@ -267,9 +324,12 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
             sec_open(f, "NVMe Firmware Slots");
             row(f, "Active Slot", "", "%u", d->nvme_fw.active_slot);
             for (int s = 0; s < MAX_FW_SLOTS; s++) {
-                if (d->nvme_fw.slot_rev[s][0])
-                    row(f, "Slot", "", "%d: %s%s", s+1, d->nvme_fw.slot_rev[s],
+                if (d->nvme_fw.slot_rev[s][0]) {
+                    char er[HTML_ESC_BUF];
+                    html_escape(d->nvme_fw.slot_rev[s], er, sizeof(er));
+                    row(f, "Slot", "", "%d: %s%s", s+1, er,
                         (s+1 == d->nvme_fw.active_slot) ? " [ACTIVE]" : "");
+                }
             }
             sec_close(f);
         }
@@ -285,7 +345,10 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
 
         if (d->power.valid) {
             sec_open(f, "Power Mode");
-            row(f, "State", "", "%s (0x%02X)", d->power.mode_name, d->power.mode);
+            char em[HTML_ESC_BUF];
+            html_escape(d->power.mode_name, em, sizeof(em));
+            fprintf(f, "<div class=\"row\"><span class=\"lbl\">State</span><span class=\"val\">%s (0x%02X)</span></div>\n",
+                    em, d->power.mode);
             sec_close(f);
         }
 
@@ -309,7 +372,7 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
         if (d->sed.valid) {
             sec_open(f, "Self-Encrypting Drive");
             row(f, "SED Capable", "", "%s", d->sed.sed_capable ? "Yes" : "No");
-            if (d->sed.desc[0]) row(f, "Standard", "", "%s", d->sed.desc);
+            if (d->sed.desc[0]) row_s(f, "Standard", "", d->sed.desc);
             row(f, "Locked", d->sed.locked ? "warn" : "", "%s", d->sed.locked ? "YES" : "No");
             sec_close(f);
         }
@@ -326,10 +389,10 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
 
         if (d->devpath.valid) {
             sec_open(f, "Device Path");
-            if (d->devpath.friendly_name[0]) row(f, "Name", "", "%s", d->devpath.friendly_name);
-            if (d->devpath.device_path[0]) row(f, "Instance", "", "%s", d->devpath.device_path);
-            if (d->devpath.hw_id[0]) row(f, "Hardware ID", "", "%s", d->devpath.hw_id);
-            if (d->devpath.location[0]) row(f, "Location", "", "%s", d->devpath.location);
+            if (d->devpath.friendly_name[0]) row_s(f, "Name", "", d->devpath.friendly_name);
+            if (d->devpath.device_path[0]) row_s(f, "Instance", "", d->devpath.device_path);
+            if (d->devpath.hw_id[0]) row_s(f, "Hardware ID", "", d->devpath.hw_id);
+            if (d->devpath.location[0]) row_s(f, "Location", "", d->devpath.location);
             sec_close(f);
         }
 
@@ -338,14 +401,20 @@ int output_html(DiskInfo* disks, int count, const char* filename) {
             for (int j = 0; j < d->volumes.count; j++) {
                 VolumeInfo* v = &d->volumes.vols[j];
                 if (v->letter) {
+                    char efs[HTML_ESC_BUF], elb[HTML_ESC_BUF];
+                    html_escape(v->fs_name, efs, sizeof(efs));
+                    html_escape(v->label, elb, sizeof(elb));
                     fprintf(f, "<div class=\"row\"><span class=\"lbl\">%c:\\</span>"
                                "<span class=\"val vol\">0x%08lX</span>"
                                "<span class=\"val\" style=\"margin-left:12px\">%s &mdash; \"%s\"</span></div>\n",
-                            v->letter, (unsigned long)v->serial, v->fs_name, v->label);
+                            v->letter, (unsigned long)v->serial, efs, elb);
                 } else if (v->mount_point[0]) {
+                    char emp[HTML_ESC_BUF], efs2[HTML_ESC_BUF];
+                    html_escape(v->mount_point, emp, sizeof(emp));
+                    html_escape(v->fs_name, efs2, sizeof(efs2));
                     fprintf(f, "<div class=\"row\"><span class=\"lbl\">%s</span>"
                                "<span class=\"val\">%s</span></div>\n",
-                            v->mount_point, v->fs_name);
+                            emp, efs2);
                 }
             }
             sec_close(f);

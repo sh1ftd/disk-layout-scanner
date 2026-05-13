@@ -1,6 +1,16 @@
 #ifdef _WIN32
 #include "../core/disk_info.h"
 #include <stddef.h>
+#include <stdio.h>
+
+#define NVME_IDENTIFY_CONTROLLER_BYTES 4096u
+#define NVME_HEALTH_LOG_MIN_BYTES 184u
+
+static void str_cpy_safe(char* dst, size_t dst_cap, const char* src) {
+    if (!dst || dst_cap == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    snprintf(dst, dst_cap, "%s", src);
+}
 
 #pragma pack(push, 1)
 typedef struct {
@@ -51,18 +61,19 @@ void query_storage_prop(HANDLE hDisk, StoragePropInfo* out) {
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_STORAGE_QUERY_PROPERTY,
                          &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL)) return;
+    if (ret < sizeof(STORAGE_DEVICE_DESCRIPTOR)) return;
     out->valid = 1;
     STORAGE_DEVICE_DESCRIPTOR* d = (STORAGE_DEVICE_DESCRIPTOR*)buf;
     if (d->VendorIdOffset && d->VendorIdOffset < ret)
-        strncpy(out->vendor, (char*)buf + d->VendorIdOffset, sizeof(out->vendor)-1);
+        str_cpy_safe(out->vendor, sizeof(out->vendor), (char*)buf + d->VendorIdOffset);
     if (d->ProductIdOffset && d->ProductIdOffset < ret)
-        strncpy(out->product, (char*)buf + d->ProductIdOffset, sizeof(out->product)-1);
+        str_cpy_safe(out->product, sizeof(out->product), (char*)buf + d->ProductIdOffset);
     if (d->ProductRevisionOffset && d->ProductRevisionOffset < ret)
-        strncpy(out->revision, (char*)buf + d->ProductRevisionOffset, sizeof(out->revision)-1);
+        str_cpy_safe(out->revision, sizeof(out->revision), (char*)buf + d->ProductRevisionOffset);
     if (d->SerialNumberOffset && d->SerialNumberOffset < ret)
-        strncpy(out->serial, (char*)buf + d->SerialNumberOffset, sizeof(out->serial)-1);
+        str_cpy_safe(out->serial, sizeof(out->serial), (char*)buf + d->SerialNumberOffset);
     out->bus_type = d->BusType;
-    strncpy(out->bus_name, bus_type_name(d->BusType), sizeof(out->bus_name)-1);
+    str_cpy_safe(out->bus_name, sizeof(out->bus_name), bus_type_name(d->BusType));
     out->removable = d->RemovableMedia;
 }
 
@@ -128,7 +139,9 @@ void query_ata_id(HANDLE hDisk, AtaIdentifyInfo* out) {
     out->trim_supported = (w[169] >> 0) & 1;
 
     if (w[106] & (1 << 14)) {
-        out->phys_log_ratio = 1 << (w[106] & 0x0F);
+        unsigned mult = (unsigned)(w[106] & 0x0Fu);
+        if (mult > 30u) mult = 30u;
+        out->phys_log_ratio = (UINT16)(1u << mult);
         if (w[106] & (1 << 12)) {
             out->log_sector_size = (UINT16)(((UINT32)w[117] | ((UINT32)w[118] << 16)) * 2);
         } else {
@@ -187,9 +200,9 @@ void query_dev_ids(HANDLE hDisk, DeviceIdsInfo* out) {
 
         VpdIdentifier* e = &out->entries[out->count];
         e->type = sid->Type;
-        strncpy(e->type_name, id_type_name(sid->Type), sizeof(e->type_name)-1);
+        str_cpy_safe(e->type_name, sizeof(e->type_name), id_type_name(sid->Type));
         e->code_set = sid->CodeSet;
-        strncpy(e->codeset_name, codeset_name(sid->CodeSet), sizeof(e->codeset_name)-1);
+        str_cpy_safe(e->codeset_name, sizeof(e->codeset_name), codeset_name(sid->CodeSet));
         e->size = (int)idsz;
 
         if (sid->CodeSet == StorageIdCodeSetAscii || sid->CodeSet == StorageIdCodeSetUtf8) {
@@ -216,9 +229,19 @@ void query_layout(HANDLE hDisk, DriveLayoutInfo* out) {
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
                          NULL, 0, buf, sizeof(buf), &ret, NULL)) return;
-    out->valid = 1;
+
+    const DWORD part_off = (DWORD)offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry);
+    if (ret < part_off) return;
+
     DRIVE_LAYOUT_INFORMATION_EX* lay = (DRIVE_LAYOUT_INFORMATION_EX*)buf;
-    out->partition_count = lay->PartitionCount;
+    DWORD pc = lay->PartitionCount;
+    DWORD part_sz = (DWORD)sizeof(PARTITION_INFORMATION_EX);
+    UINT64 room = (UINT64)ret - (UINT64)part_off;
+    DWORD max_parts = part_sz ? (DWORD)(room / (UINT64)part_sz) : 0u;
+    if (max_parts == 0u || pc > max_parts) return;
+
+    out->valid = 1;
+    out->partition_count = pc;
 
     if (lay->PartitionStyle == PARTITION_STYLE_MBR) {
         out->style = 0;
@@ -234,7 +257,7 @@ void query_layout(HANDLE hDisk, DriveLayoutInfo* out) {
         out->style = 2;
     }
 
-    for (DWORD p = 0; p < lay->PartitionCount && out->detail_count < MAX_PARTITIONS; p++) {
+    for (DWORD p = 0; p < pc && out->detail_count < MAX_PARTITIONS; p++) {
         PARTITION_INFORMATION_EX* pe = &lay->PartitionEntry[p];
         if (pe->PartitionLength.QuadPart == 0) continue;
         PartitionInfo* pi = &out->parts[out->detail_count];
@@ -278,6 +301,7 @@ void query_geometry(HANDLE hDisk, GeometryInfo* out) {
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
                          NULL, 0, &geo, sizeof(geo), &ret, NULL)) return;
+    if (ret < sizeof(DISK_GEOMETRY_EX)) return;
     out->valid = 1;
     out->total_bytes      = geo.DiskSize.QuadPart;
     out->bytes_per_sector = geo.Geometry.BytesPerSector;
@@ -302,9 +326,10 @@ void query_smart(HANDLE hDisk, SmartInfo* out) {
     cmd->irDriveRegs.bSectorNumberReg = 1;
 
     SENDCMDOUTPARAMS_S enable_out;
-    DWORD ret = 0;
-    DeviceIoControl(hDisk, SMART_SEND_DRIVE_COMMAND,
-                    cmd_buf, sizeof(cmd_buf), &enable_out, sizeof(enable_out), &ret, NULL);
+    memset(&enable_out, 0, sizeof(enable_out));
+    DWORD ret_en = 0;
+    (void)DeviceIoControl(hDisk, SMART_SEND_DRIVE_COMMAND,
+                          cmd_buf, sizeof(cmd_buf), &enable_out, sizeof(enable_out), &ret_en, NULL);
 
     memset(cmd_buf, 0, sizeof(cmd_buf));
     cmd = (SENDCMDINPARAMS_S*)cmd_buf;
@@ -318,8 +343,9 @@ void query_smart(HANDLE hDisk, SmartInfo* out) {
 
     BYTE status_buf[sizeof(SENDCMDOUTPARAMS_S) + 16];
     memset(status_buf, 0, sizeof(status_buf));
-    DeviceIoControl(hDisk, SMART_SEND_DRIVE_COMMAND,
-                    cmd_buf, sizeof(cmd_buf), status_buf, sizeof(status_buf), &ret, NULL);
+    DWORD ret_st = 0;
+    (void)DeviceIoControl(hDisk, SMART_SEND_DRIVE_COMMAND,
+                          cmd_buf, sizeof(cmd_buf), status_buf, sizeof(status_buf), &ret_st, NULL);
 
     memset(cmd_buf, 0, sizeof(cmd_buf));
     cmd = (SENDCMDINPARAMS_S*)cmd_buf;
@@ -334,10 +360,12 @@ void query_smart(HANDLE hDisk, SmartInfo* out) {
     SENDCMDOUTPARAMS_S attr_out;
     memset(&attr_out, 0, sizeof(attr_out));
 
+    DWORD ret = 0;
     if (!DeviceIoControl(hDisk, SMART_RCV_DRIVE_DATA,
                          cmd_buf, sizeof(cmd_buf), &attr_out, sizeof(attr_out), &ret, NULL)) {
         return;
     }
+    if (ret < sizeof(SENDCMDOUTPARAMS_S)) return;
 
     out->valid = 1;
     out->health_ok = 1;
@@ -358,7 +386,7 @@ void query_smart(HANDLE hDisk, SmartInfo* out) {
             a->raw = (a->raw << 8) | entry[5 + b];
 
         const char* name = smart_attr_name(id);
-        if (name[0]) strncpy(a->name, name, sizeof(a->name)-1);
+        if (name[0]) str_cpy_safe(a->name, sizeof(a->name), name);
         else sprintf(a->name, "Attr 0x%02X", id);
 
         if (id == 0xC2 || id == 0xBE) {
@@ -394,19 +422,53 @@ void query_vols(int disk_number, VolumesInfo* out) {
                                    NULL, OPEN_EXISTING, 0, NULL);
         if (hVol == INVALID_HANDLE_VALUE) continue;
 
-        BYTE ext_buf[256];
-        memset(ext_buf, 0, sizeof(ext_buf));
+        size_t buf_cap = 4096u;
+        BYTE* ext_buf = (BYTE*)malloc(buf_cap);
+        if (!ext_buf) { CloseHandle(hVol); continue; }
+        memset(ext_buf, 0, buf_cap);
         DWORD ret = 0;
         BOOL ok = DeviceIoControl(hVol, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-                                   NULL, 0, ext_buf, sizeof(ext_buf), &ret, NULL);
+                                   NULL, 0, ext_buf, (DWORD)buf_cap, &ret, NULL);
+        while ((!ok && GetLastError() == ERROR_MORE_DATA) || (ok && ret < sizeof(VOLUME_DISK_EXTENTS))) {
+            if (buf_cap >= 256u * 1024u) break;
+            size_t next = buf_cap * 2u;
+            BYTE* nb = (BYTE*)realloc(ext_buf, next);
+            if (!nb) break;
+            ext_buf = nb;
+            buf_cap = next;
+            memset(ext_buf, 0, buf_cap);
+            ret = 0;
+            ok = DeviceIoControl(hVol, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                                 NULL, 0, ext_buf, (DWORD)buf_cap, &ret, NULL);
+        }
+        if (ok && ret >= sizeof(VOLUME_DISK_EXTENTS)) {
+            VOLUME_DISK_EXTENTS* ext0 = (VOLUME_DISK_EXTENTS*)ext_buf;
+            DWORD need0 = (DWORD)(offsetof(VOLUME_DISK_EXTENTS, Extents)
+                                  + (size_t)ext0->NumberOfDiskExtents * sizeof(DISK_EXTENT));
+            while (ok && ret < need0 && buf_cap < 256u * 1024u) {
+                size_t next = buf_cap * 2u;
+                BYTE* nb = (BYTE*)realloc(ext_buf, next);
+                if (!nb) break;
+                ext_buf = nb;
+                buf_cap = next;
+                memset(ext_buf, 0, buf_cap);
+                ret = 0;
+                ok = DeviceIoControl(hVol, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                                     NULL, 0, ext_buf, (DWORD)buf_cap, &ret, NULL);
+            }
+        }
         CloseHandle(hVol);
-        if (!ok) continue;
+        if (!ok) { free(ext_buf); continue; }
 
         VOLUME_DISK_EXTENTS* ext = (VOLUME_DISK_EXTENTS*)ext_buf;
+        DWORD need = (DWORD)(offsetof(VOLUME_DISK_EXTENTS, Extents)
+                             + (size_t)ext->NumberOfDiskExtents * sizeof(DISK_EXTENT));
+        if (ret < sizeof(VOLUME_DISK_EXTENTS) || ret < need) { free(ext_buf); continue; }
+
         BOOL match = FALSE;
         for (DWORD e = 0; e < ext->NumberOfDiskExtents; e++)
             if ((int)ext->Extents[e].DiskNumber == disk_number) { match = TRUE; break; }
-        if (!match) continue;
+        if (!match) { free(ext_buf); continue; }
 
         VolumeInfo* v = &out->vols[out->count];
         v->letter = letter;
@@ -422,6 +484,7 @@ void query_vols(int disk_number, VolumesInfo* out) {
 
             out->count++;
         }
+        free(ext_buf);
     }
 }
 
@@ -440,6 +503,10 @@ typedef struct {
     DWORD Reserved;
 } PROTO_QUERY;
 #pragma pack(pop)
+
+#define MIN_NVME_HEALTH_RET ((DWORD)(sizeof(STORAGE_PROPERTY_QUERY) + (sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY)) + NVME_HEALTH_LOG_MIN_BYTES))
+
+#define MIN_NVME_IDENTIFY_RET ((DWORD)(sizeof(STORAGE_PROPERTY_QUERY) + (sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY)) + NVME_IDENTIFY_CONTROLLER_BYTES))
 
 void query_nvme_health(HANDLE hDisk, NvmeHealthInfo* out) {
     memset(out, 0, sizeof(*out));
@@ -465,13 +532,14 @@ void query_nvme_health(HANDLE hDisk, NvmeHealthInfo* out) {
                          buf, sizeof(PROTO_QUERY), out_buf, sizeof(out_buf), &ret, NULL))
         return;
 
+    if (ret < MIN_NVME_HEALTH_RET) return;
+
     BYTE* log = out_buf + sizeof(STORAGE_PROPERTY_QUERY)
               + (sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY));
-    if (ret < sizeof(PROTO_QUERY) + 32) return;
 
     out->valid = 1;
     out->critical_warning = log[0];
-    out->temperature = (UINT16)(log[1] | (log[2] << 8));  /* Kelvin */
+    out->temperature = (UINT16)(log[1] | (log[2] << 8));
     out->avail_spare = log[3];
     out->avail_spare_thresh = log[4];
     out->percent_used = log[5];
@@ -494,6 +562,7 @@ void query_cache(HANDLE hDisk, CacheInfo* out) {
 
     if (!DeviceIoControl(hDisk, IOCTL_DISK_GET_CACHE_INFORMATION,
                          NULL, 0, &ci, sizeof(ci), &ret, NULL)) return;
+    if (ret < sizeof(DISK_CACHE_INFORMATION)) return;
 
     out->valid = 1;
     out->read_cache     = ci.ReadCacheEnabled;
@@ -511,10 +580,11 @@ void query_extra_props(HANDLE hDisk, ExtraPropsInfo* out) {
         memset(buf, 0, sizeof(buf));
         STORAGE_PROPERTY_QUERY spq;
         memset(&spq, 0, sizeof(spq));
-        spq.PropertyId = (STORAGE_PROPERTY_ID)7; /* StorageDeviceSeekPenaltyProperty */
+        spq.PropertyId = (STORAGE_PROPERTY_ID)7;
         spq.QueryType  = PropertyStandardQuery;
         if (DeviceIoControl(hDisk, IOCTL_STORAGE_QUERY_PROPERTY,
-                            &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL)) {
+                            &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL)
+            && ret >= 8 + (DWORD)sizeof(BOOL)) {
             out->has_seek_penalty = *(BOOL*)(buf + 8) ? 1 : 0;
         }
     }
@@ -524,10 +594,11 @@ void query_extra_props(HANDLE hDisk, ExtraPropsInfo* out) {
         memset(buf, 0, sizeof(buf));
         STORAGE_PROPERTY_QUERY spq;
         memset(&spq, 0, sizeof(spq));
-        spq.PropertyId = (STORAGE_PROPERTY_ID)8; /* StorageDeviceTrimProperty */
+        spq.PropertyId = (STORAGE_PROPERTY_ID)8;
         spq.QueryType  = PropertyStandardQuery;
         if (DeviceIoControl(hDisk, IOCTL_STORAGE_QUERY_PROPERTY,
-                            &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL)) {
+                            &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL)
+            && ret >= 8 + (DWORD)sizeof(BOOL)) {
             out->trim_enabled = *(BOOL*)(buf + 8) ? 1 : 0;
         }
     }
@@ -537,7 +608,7 @@ void query_extra_props(HANDLE hDisk, ExtraPropsInfo* out) {
         memset(buf, 0, sizeof(buf));
         STORAGE_PROPERTY_QUERY spq;
         memset(&spq, 0, sizeof(spq));
-        spq.PropertyId = (STORAGE_PROPERTY_ID)6; /* StorageAccessAlignmentProperty */
+        spq.PropertyId = (STORAGE_PROPERTY_ID)6;
         spq.QueryType  = PropertyStandardQuery;
         if (DeviceIoControl(hDisk, IOCTL_STORAGE_QUERY_PROPERTY,
                             &spq, sizeof(spq), buf, sizeof(buf), &ret, NULL) && ret >= 16) {
@@ -555,13 +626,14 @@ void query_perf(HANDLE hDisk, PerfInfo* out) {
 
     if (!DeviceIoControl(hDisk, IOCTL_DISK_PERFORMANCE,
                          NULL, 0, &dp, sizeof(dp), &ret, NULL)) return;
+    if (ret < sizeof(DISK_PERFORMANCE)) return;
 
     out->valid = 1;
     out->bytes_read    = dp.BytesRead.QuadPart;
     out->bytes_written = dp.BytesWritten.QuadPart;
     out->read_count    = dp.ReadCount;
     out->write_count   = dp.WriteCount;
-    out->read_time_ns  = dp.ReadTime.QuadPart * 100;   /* 100ns ticks -> ns */
+    out->read_time_ns  = dp.ReadTime.QuadPart * 100;
     out->write_time_ns = dp.WriteTime.QuadPart * 100;
     out->idle_time_ns  = dp.IdleTime.QuadPart * 100;
     out->queue_depth   = dp.QueueDepth;
@@ -631,11 +703,11 @@ void query_devpath(int disk_number, DevPathInfo* out) {
                                            NULL, (BYTE*)driver, sizeof(driver), NULL);
 
         out->valid = 1;
-        strncpy(out->device_path, detail->DevicePath, sizeof(out->device_path)-1);
-        strncpy(out->friendly_name, friendly, sizeof(out->friendly_name)-1);
-        strncpy(out->hw_id, hwid, sizeof(out->hw_id)-1);
-        strncpy(out->location, location, sizeof(out->location)-1);
-        strncpy(out->driver, driver, sizeof(out->driver)-1);
+        str_cpy_safe(out->device_path, sizeof(out->device_path), detail->DevicePath);
+        str_cpy_safe(out->friendly_name, sizeof(out->friendly_name), friendly);
+        str_cpy_safe(out->hw_id, sizeof(out->hw_id), hwid);
+        str_cpy_safe(out->location, sizeof(out->location), location);
+        str_cpy_safe(out->driver, sizeof(out->driver), driver);
         free(detail);
         break;
     }
@@ -649,7 +721,7 @@ static void query_smart_thresh(HANDLE hDisk, SmartThreshInfo* out, SmartInfo* sm
     memset(cmd_buf, 0, sizeof(cmd_buf));
     SENDCMDINPARAMS_S* cmd = (SENDCMDINPARAMS_S*)cmd_buf;
     cmd->cBufferSize = 512;
-    cmd->irDriveRegs.bFeaturesReg     = 0xD1; /* SMART_READ_THRESHOLDS */
+    cmd->irDriveRegs.bFeaturesReg     = 0xD1;
     cmd->irDriveRegs.bCylLowReg       = 0x4F;
     cmd->irDriveRegs.bCylHighReg      = 0xC2;
     cmd->irDriveRegs.bCommandReg      = SMART_CMD;
@@ -662,6 +734,7 @@ static void query_smart_thresh(HANDLE hDisk, SmartThreshInfo* out, SmartInfo* sm
     if (!DeviceIoControl(hDisk, SMART_RCV_DRIVE_DATA,
                          cmd_buf, sizeof(cmd_buf), &thresh_out, sizeof(thresh_out), &ret, NULL))
         return;
+    if (ret < sizeof(SENDCMDOUTPARAMS_S)) return;
 
     out->valid = 1;
     BYTE* data = thresh_out.bBuffer;
@@ -719,18 +792,18 @@ static void query_power_mode(HANDLE hDisk, PowerModeInfo* out) {
     aptd.DataTransferLength = 0;
     aptd.TimeOutValue       = 5;
     aptd.DataBuffer         = NULL;
-    aptd.CurrentTaskFile[6] = 0xE5; /* CHECK POWER MODE */
+    aptd.CurrentTaskFile[6] = 0xE5;
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_ATA_PASS_THROUGH_DIRECT,
                          &aptd, sizeof(aptd), &aptd, sizeof(aptd), &ret, NULL)) return;
 
     out->valid = 1;
-    out->mode = aptd.CurrentTaskFile[1]; /* sector count register = power mode */
+    out->mode = aptd.CurrentTaskFile[1];
     switch (out->mode) {
-        case 0x00: strncpy(out->mode_name, "Standby", sizeof(out->mode_name)-1); break;
-        case 0x40: strncpy(out->mode_name, "NVMe Idle", sizeof(out->mode_name)-1); break;
-        case 0x80: strncpy(out->mode_name, "Idle", sizeof(out->mode_name)-1); break;
-        case 0xFF: strncpy(out->mode_name, "Active/Idle", sizeof(out->mode_name)-1); break;
+        case 0x00: str_cpy_safe(out->mode_name, sizeof(out->mode_name), "Standby"); break;
+        case 0x40: str_cpy_safe(out->mode_name, sizeof(out->mode_name), "NVMe Idle"); break;
+        case 0x80: str_cpy_safe(out->mode_name, sizeof(out->mode_name), "Idle"); break;
+        case 0xFF: str_cpy_safe(out->mode_name, sizeof(out->mode_name), "Active/Idle"); break;
         default:   sprintf(out->mode_name, "Unknown (0x%02X)", out->mode); break;
     }
 }
@@ -743,8 +816,8 @@ static void query_nvme_identify(HANDLE hDisk, NvmeIdentifyInfo* out) {
     pq->Query.PropertyId = (STORAGE_PROPERTY_ID)StorageDeviceProtocolSpecificProperty;
     pq->Query.QueryType  = PropertyStandardQuery;
     pq->ProtocolType     = ProtocolTypeNvme;
-    pq->DataType         = 1; /* NVMeDataTypeIdentify */
-    pq->ProtocolDataRequestValue = 1; /* CNS=1 (Identify Controller) */
+    pq->DataType         = 1;
+    pq->ProtocolDataRequestValue = 1;
     pq->ProtocolDataOffset = sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY);
     pq->ProtocolDataLength = 4096;
 
@@ -756,7 +829,7 @@ static void query_nvme_identify(HANDLE hDisk, NvmeIdentifyInfo* out) {
 
     BYTE* id = out_buf + sizeof(STORAGE_PROPERTY_QUERY)
              + (sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY));
-    if (ret < sizeof(PROTO_QUERY) + 256) return;
+    if (ret < MIN_NVME_IDENTIFY_RET) return;
 
     out->valid = 1;
     out->vid   = *(UINT16*)(id + 0);
@@ -768,12 +841,12 @@ static void query_nvme_identify(HANDLE hDisk, NvmeIdentifyInfo* out) {
     memcpy(out->firmware, id + 64, 8);
     for (int i = 7; i >= 0 && out->firmware[i] == ' '; i--) out->firmware[i] = '\0';
 
-    out->max_transfer_sz = id[77]; /* MDTS */
+    out->max_transfer_sz = id[77];
     out->ctrl_id = *(UINT16*)(id + 78);
     out->ver     = *(UINT32*)(id + 80);
     out->ieee_oui[0] = id[73]; out->ieee_oui[1] = id[74]; out->ieee_oui[2] = id[75];
     out->num_namespaces = (UINT8)(*(UINT32*)(id + 516) & 0xFF);
-    memcpy(&out->total_cap_bytes, id + 280, 8); /* low 64 bits of TNVMCAP */
+    memcpy(&out->total_cap_bytes, id + 280, 8);
     memcpy(&out->unalloc_cap_bytes, id + 296, 8);
 }
 
@@ -786,7 +859,7 @@ static void query_nvme_fw_slots(HANDLE hDisk, NvmeFwSlotInfo* out) {
     pq->Query.QueryType  = PropertyStandardQuery;
     pq->ProtocolType     = ProtocolTypeNvme;
     pq->DataType         = NVMeDataTypeLogPage;
-    pq->ProtocolDataRequestValue = 0x03; /* Firmware Slot Info */
+    pq->ProtocolDataRequestValue = 0x03;
     pq->ProtocolDataOffset = sizeof(PROTO_QUERY) - sizeof(STORAGE_PROPERTY_QUERY);
     pq->ProtocolDataLength = 512;
 
@@ -824,9 +897,9 @@ static void query_hpa(HANDLE hDisk, HpaInfo* out, AtaIdentifyInfo* ata) {
     aptd.DataBuffer         = NULL;
 
     if (ata->lba48_supported) {
-        aptd.CurrentTaskFile[6] = 0x27; /* READ NATIVE MAX ADDRESS EXT */
+        aptd.CurrentTaskFile[6] = 0x27;
     } else {
-        aptd.CurrentTaskFile[6] = 0xF8; /* READ NATIVE MAX ADDRESS */
+        aptd.CurrentTaskFile[6] = 0xF8;
     }
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_ATA_PASS_THROUGH_DIRECT,
@@ -864,8 +937,8 @@ static void query_dco(HANDLE hDisk, DcoInfo* out, HpaInfo* hpa) {
     aptd.DataTransferLength = 512;
     aptd.TimeOutValue       = 5;
     aptd.DataBuffer         = dco_data;
-    aptd.CurrentTaskFile[0] = 0xC2; /* Features = IDENTIFY */
-    aptd.CurrentTaskFile[6] = 0xB1; /* DEVICE CONFIGURATION */
+    aptd.CurrentTaskFile[0] = 0xC2;
+    aptd.CurrentTaskFile[6] = 0xB1;
     DWORD ret = 0;
     if (!DeviceIoControl(hDisk, IOCTL_ATA_PASS_THROUGH_DIRECT,
                          &aptd, sizeof(aptd), &aptd, sizeof(aptd), &ret, NULL)) return;
@@ -909,13 +982,12 @@ static void query_sed_opal(HANDLE hDisk, SedOpalInfo* out) {
                   | ((total_len << 8) & 0xFF0000) | ((total_len << 24) & 0xFF000000);
     }
 
-    /* Cap to bytes actually returned; never let end fall before ptr (that wraps size_t and corrupts the loop). */
     BYTE* buf_end = trusted_buf + (ret < sizeof(trusted_buf) ? ret : sizeof(trusted_buf));
     BYTE* end = trusted_buf + total_len;
     if (end > buf_end)
         end = buf_end;
 
-    BYTE* ptr = trusted_buf + 48; /* skip header */
+    BYTE* ptr = trusted_buf + 48;
     if (ptr >= end || total_len < 48)
         return;
 
@@ -930,8 +1002,8 @@ static void query_sed_opal(HANDLE hDisk, SedOpalInfo* out) {
         if (chunk > rem)
             break;
         switch (feat_code) {
-            case 0x0001: /* TPer */ break;
-            case 0x0002: /* Locking */
+            case 0x0001: break;
+            case 0x0002:
                 if (feat_len >= 1) out->locked = (ptr[4] >> 2) & 1;
                 break;
             case 0x0100: out->enterprise_ssc = 1; break;
@@ -1001,7 +1073,7 @@ static void query_scsi_modes(HANDLE hDisk, ScsiModePagesInfo* out) {
     sptwb.spt.SenseInfoOffset    = sense_off;
     sptwb.spt.Cdb[0] = 0x1A;
     sptwb.spt.Cdb[2] = 0x08;
-    sptwb.spt.Cdb[4] = 0xFF; /* max for MODE SENSE(6) */
+    sptwb.spt.Cdb[4] = 0xFF;
 
     DWORD ret = 0;
     if (DeviceIoControl(hDisk, IOCTL_SCSI_PASS_THROUGH,
@@ -1025,7 +1097,7 @@ static void query_scsi_modes(HANDLE hDisk, ScsiModePagesInfo* out) {
     sptwb.spt.SenseInfoOffset    = sense_off;
     sptwb.spt.Cdb[0] = 0x1A;
     sptwb.spt.Cdb[2] = 0x01;
-    sptwb.spt.Cdb[4] = 0xFF; /* max for MODE SENSE(6) */
+    sptwb.spt.Cdb[4] = 0xFF;
 
     if (DeviceIoControl(hDisk, IOCTL_SCSI_PASS_THROUGH,
                         &sptwb, sizeof(sptwb), &sptwb, sizeof(sptwb), &ret, NULL)) {
@@ -1045,7 +1117,7 @@ int scan_disks(DiskInfo* disks, int max_disks) {
         char path[64];
         sprintf(path, "\\\\.\\PhysicalDrive%d", drv);
 
-        HANDLE hDisk = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+        HANDLE hDisk = CreateFileA(path, GENERIC_READ,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                                     NULL, OPEN_EXISTING, 0, NULL);
         if (hDisk == INVALID_HANDLE_VALUE) continue;
@@ -1084,4 +1156,4 @@ int scan_disks(DiskInfo* disks, int max_disks) {
     return count;
 }
 
-#endif /* _WIN32 */
+#endif

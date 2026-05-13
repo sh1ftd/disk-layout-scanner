@@ -80,7 +80,7 @@ typedef struct {
 
 typedef struct {
     int    valid;
-    int    style; /* 0=MBR, 1=GPT, 2=RAW */
+    int    style;
     UINT32 mbr_signature;
     char   gpt_guid[64];
     UINT32 partition_count;
@@ -116,7 +116,6 @@ typedef struct {
 
 typedef struct {
     int       valid;
-    /* 1 once SMART READ VALUES succeeded (attribute block available); not a full predictive-failure verdict */
     int       health_ok;
     int       attr_count;
     SmartAttr attrs[MAX_SMART_ATTRS];
@@ -133,7 +132,7 @@ typedef struct {
 typedef struct {
     int      valid;
     UINT8    critical_warning;
-    UINT16   temperature; /* kelvin */
+    UINT16   temperature;
     UINT8    avail_spare;
     UINT8    avail_spare_thresh;
     UINT8    percent_used;

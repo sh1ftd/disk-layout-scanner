@@ -38,6 +38,4 @@ Walks **physical** drives (up to **64** per run) and dumps identity, health, par
 
 Prebuilt **Windows** + static **Linux (musl)** binaries: [Releases](https://github.com/sh1ftd/disk-layout-scanner/releases).
 
-Reports can include serials, WWNs, and volume identifiers—treat as sensitive.
-
 MIT License.
