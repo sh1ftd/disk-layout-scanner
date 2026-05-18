@@ -29,7 +29,7 @@ RUN V=$(tr -d '[:space:]' < VERSION) && gcc -std=c17 -O2 -Wall -Wextra -Wno-unus
 
 FROM scratch
 LABEL org.opencontainers.image.title="disk-layout-scanner" \
-      org.opencontainers.image.description="Cross-platform disk layout and storage identity reporting (static Linux binary)" \
-      org.opencontainers.image.licenses="MIT"
+    org.opencontainers.image.description="Cross-platform disk layout and storage identity reporting (static Linux binary)" \
+    org.opencontainers.image.licenses="MIT"
 COPY --from=builder /disk-layout-scanner /disk-layout-scanner
 ENTRYPOINT ["/disk-layout-scanner"]

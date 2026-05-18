@@ -1,4 +1,4 @@
-# Windows — `DiskInfo` extraction reference
+# Windows - `DiskInfo` extraction reference
 
 <p align="center">
 <a href="README.md"><b>↑ Back to README</b></a>
@@ -100,7 +100,7 @@ Unless noted, fields are written only when the underlying `DeviceIoControl` / `R
 
 ## `SmartInfo` (`smart`)
 
-`SMART_SEND_DRIVE_COMMAND` (enable ops, return status — **return status not decoded into a field**); `SMART_RCV_DRIVE_DATA` READ VALUES (`0xD0` path in code).
+`SMART_SEND_DRIVE_COMMAND` (enable ops, return status - **return status not decoded into a field**); `SMART_RCV_DRIVE_DATA` READ VALUES (`0xD0` path in code).
 
 | Member                                   | Source                                                                           |
 | ---------------------------------------- | -------------------------------------------------------------------------------- |
@@ -168,7 +168,7 @@ Same IOCTL path, Identify controller buffer (4096 B), `query_nvme_identify`.
 
 ## `NvmeFwSlotInfo` (`nvme_fw`)
 
-NVMe Get Log Page — **Firmware Slot Information** (same protocol IOCTL path).
+NVMe Get Log Page - **Firmware Slot Information** (same protocol IOCTL path).
 
 | Member                        | Source                          |
 | ----------------------------- | ------------------------------- |
