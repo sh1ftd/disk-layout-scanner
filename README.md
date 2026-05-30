@@ -1,7 +1,5 @@
 # disk-layout-scanner
 
-## What it is
-
 Command-line program that enumerates **physical** disks and prints a report to the terminal (text or JSON) or to an HTML file. It extracts drive identity, partitions, SMART, NVMe health, and related fields the OS can expose.
 
 ---
